@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# WPC Dashboard — OneXtel Campaign Analytics
 
-## Getting Started
+A Next.js dashboard visualizing the **OneXtel** WhatsApp campaign block of the
+`wpc-track` Google Sheet, for indiagold's gold-loan lead acquisition.
 
-First, run the development server:
+Stack: Next.js 16 (App Router) · Tailwind v4 · Recharts · TypeScript.
+
+## Run
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Data source
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The dashboard reads the sheet through the public **gviz CSV** endpoint and
+parses the transposed OneXtel report block ([lib/sheet.ts](lib/sheet.ts)).
 
-## Learn More
+- If the sheet tab is publicly readable, it shows **live** data (revalidated
+  every 5 minutes) — you'll see a green "Live · sheet" chip.
+- Otherwise it falls back to a **bundled snapshot** (05–13 Aug 2026) so the UI
+  always renders — an amber "Snapshot" chip.
 
-To learn more about Next.js, take a look at the following resources:
+### To go live
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Make the sheet readable by "Anyone with the link" (Viewer), or
+File → Share → Publish to web for the relevant tab. No credentials needed.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Override the target sheet/tab with env vars if needed:
 
-## Deploy on Vercel
+```bash
+NEXT_PUBLIC_SHEET_ID=<id>
+NEXT_PUBLIC_SHEET_GID=<gid>
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Structure
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Path | Purpose |
+| --- | --- |
+| `lib/sheet.ts` | Fetch + CSV parse of the OneXtel block, totals, snapshot fallback |
+| `lib/theme.tsx` | Light/dark theme context + palette (also drives Recharts colors) |
+| `app/page.tsx` | Server component — fetches data, renders the dashboard |
+| `app/components/Dashboard.tsx` | Layout: KPIs, funnel, donut, table |
+| `app/components/charts.tsx` | Recharts: trend area chart, leads bar, delivery donut, sparklines |
+| `app/globals.css` | Design tokens + component styles |
+
+## Next steps
+
+- Add the **SMARTPING** report block (second `Date` row in the same tab).
+- Add the **lead-level tables** (Converted/Scheduling and Follow-up) as a
+  filterable table with owner / city / lender breakdowns.
+- Wire **Amount Spent** to compute real Cost/Lead once SMARTPING spend flows in.

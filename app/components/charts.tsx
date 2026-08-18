@@ -110,6 +110,36 @@ export function LeadsBar({ days }: { days: DayRecord[] }) {
   );
 }
 
+/* ---------------- Amount spent per day ---------------- */
+export function SpendBar({ days }: { days: DayRecord[] }) {
+  const { palette: p } = useTheme();
+  const data = days.filter((d) => d.amountSpent != null);
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+        <CartesianGrid stroke={p.line} vertical={false} />
+        <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fill: p.muted, fontSize: 11 }} axisLine={{ stroke: p.line }} tickLine={false} />
+        <YAxis tickFormatter={(v) => `₹${v}`} tick={{ fill: p.muted, fontSize: 11 }} axisLine={false} tickLine={false} width={44} />
+        <Tooltip
+          cursor={{ fill: p.surface2 }}
+          content={({ active, payload, label }) =>
+            active && payload?.length ? (
+              <Tip
+                title={String(label)}
+                rows={[
+                  { name: "Spent", value: payload[0]?.payload.amountSpent ?? 0, color: p.gold, suffix: "" },
+                  { name: "Sent", value: payload[0]?.payload.sent ?? 0, color: p.teal },
+                ]}
+              />
+            ) : null
+          }
+        />
+        <Bar dataKey="amountSpent" fill={p.gold} radius={[5, 5, 0, 0]} maxBarSize={38} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 /* ---------------- Delivery donut ---------------- */
 export function DeliveryDonut({
   read, deliveredUnread, failed, centerPct,

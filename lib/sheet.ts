@@ -1,16 +1,17 @@
-// Fetches and parses the OneXtel "Campaign Track Report" block from the
-// wpc-track Google Sheet via the public gviz CSV endpoint.
+// Fetches and parses the WhatsApp "Campaign Track Report" blocks from the
+// wpc-track Google Sheet via the raw CSV export endpoint.
 //
-// The sheet is transposed: metrics are rows, dates are columns. There are
-// multiple stacked report blocks (OneXtel, then SMARTPING); we read the
-// first "Date" row and the labelled metric rows immediately below it.
+// The sheet is transposed (metrics = rows, dates = columns) and stacks
+// multiple report blocks vertically (OneXtel, then SMARTPING). We use the
+// `export?format=csv` endpoint rather than `gviz` because gviz infers one
+// type per column and silently blanks mixed cells (SMARTPING dates, ₹ spend).
 
 export const SHEET_ID =
   process.env.NEXT_PUBLIC_SHEET_ID ?? "1TXj2DDiffxG8IER_Ux3R4LEkPgqeJ9ys9TxS0WFn_Y4";
 export const SHEET_GID = process.env.NEXT_PUBLIC_SHEET_GID ?? "0";
 
 export const csvUrl = (id = SHEET_ID, gid = SHEET_GID) =>
-  `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+  `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
 
 export type DayRecord = {
   date: string;
@@ -31,25 +32,40 @@ export type DayRecord = {
   schedulingPct: number | null;
   unqualified: number | null;
   unqualifiedPct: number | null;
+  amountSpent: number | null;
 };
 
-export type OneXtelData = {
+export type Totals = {
+  campaigns: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  leads: number;
+  utc: number;
+  followUp: number;
+  scheduling: number;
+  unqualified: number;
+  amountSpent: number;
+  deliveryPct: number;
+  leadPct: number;
+  readPct: number;
+  costPerLead: number | null;
+  costPerMsg: number | null;
+  activeDays: number;
+};
+
+export type Report = {
+  name: string;
+  slug: string;
   days: DayRecord[];
-  totals: {
-    campaigns: number;
-    sent: number;
-    delivered: number;
-    read: number;
-    leads: number;
-    utc: number;
-    followUp: number;
-    scheduling: number;
-    unqualified: number;
-    deliveryPct: number;
-    leadPct: number;
-    readPct: number;
-    activeDays: number;
-  };
+  totals: Totals;
+  hasLeads: boolean;
+  hasSpend: boolean;
+};
+
+export type SheetData = {
+  reports: Report[];
   source: "live" | "snapshot";
   fetchedAt: string;
 };
@@ -97,7 +113,6 @@ function num(raw: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// Maps normalized OneXtel row labels to record keys.
 const LABELS: Record<string, keyof DayRecord> = {
   "campaign count": "campaigns",
   "total sent": "sent",
@@ -112,116 +127,166 @@ const LABELS: Record<string, keyof DayRecord> = {
   "utc %": "utcPct",
   "follow up": "followUp",
   "scheduling/branch walkin - query": "scheduling",
+  "scheduling/branch walkin": "scheduling",
   "follow up %": "followUpPct",
   "scheduling %": "schedulingPct",
   unqualified: "unqualified",
   "unqualified %": "unqualifiedPct",
+  "amount spent": "amountSpent",
 };
 
-export function parseOneXtel(csv: string): DayRecord[] {
-  const rows = parseCsv(csv);
-  // Find the first "Date" row — this heads the OneXtel block.
-  const dateRowIdx = rows.findIndex((r) => norm(r[0]) === "date");
-  if (dateRowIdx === -1) return [];
+const TITLE_RE = /campaign track report\s*-\s*(.+)/i;
 
-  const dateRow = rows[dateRowIdx];
-  const dateCols: number[] = [];
-  const dates: string[] = [];
-  for (let c = 1; c < dateRow.length; c++) {
-    if (norm(dateRow[c]) !== "") {
-      dateCols.push(c);
-      dates.push(dateRow[c].trim());
-    }
-  }
-
-  const days: DayRecord[] = dates.map((date) => ({
-    date,
-    campaigns: null,
-    sent: null,
-    delivered: null,
-    deliveryPct: null,
-    urlClicks: null,
-    failed: null,
-    read: null,
-    leads: null,
-    leadPct: null,
-    utc: null,
-    utcPct: null,
-    followUp: null,
-    scheduling: null,
-    followUpPct: null,
-    schedulingPct: null,
-    unqualified: null,
-    unqualifiedPct: null,
-  }));
-
-  // Walk rows below the Date row until the next section (another "Date" row).
-  for (let r = dateRowIdx + 1; r < rows.length; r++) {
-    const label = norm(rows[r][0]);
-    if (label === "date") break; // reached the SMARTPING block
-    const key = LABELS[label];
-    if (!key) continue;
-    dateCols.forEach((col, i) => {
-      (days[i] as Record<string, number | null | string>)[key] = num(rows[r][col]);
-    });
-  }
-  return days;
+function emptyDay(date: string): DayRecord {
+  return {
+    date, campaigns: null, sent: null, delivered: null, deliveryPct: null,
+    urlClicks: null, failed: null, read: null, leads: null, leadPct: null,
+    utc: null, utcPct: null, followUp: null, scheduling: null, followUpPct: null,
+    schedulingPct: null, unqualified: null, unqualifiedPct: null, amountSpent: null,
+  };
 }
 
-export function summarize(days: DayRecord[], source: OneXtelData["source"]): OneXtelData {
-  const active = days.filter((d) => d.sent != null);
+// Parses every "Campaign Track Report - X" block in the sheet into DayRecords.
+export function parseReports(csv: string): { name: string; days: DayRecord[] }[] {
+  const rows = parseCsv(csv);
+  const blocks: { name: string; days: DayRecord[] }[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const m = (rows[i][0] ?? "").match(TITLE_RE);
+    if (!m) {
+      i++;
+      continue;
+    }
+    const name = m[1].trim();
+    // Find the Date row heading this block.
+    let d = i + 1;
+    while (d < rows.length && norm(rows[d][0]) !== "date") d++;
+    if (d >= rows.length) break;
+
+    const dateRow = rows[d];
+    const cols: number[] = [];
+    const days: DayRecord[] = [];
+    for (let c = 1; c < dateRow.length; c++) {
+      if (norm(dateRow[c]) !== "") {
+        cols.push(c);
+        days.push(emptyDay(dateRow[c].trim()));
+      }
+    }
+    // Read metric rows until the next block title or Date row.
+    let r = d + 1;
+    for (; r < rows.length; r++) {
+      if (TITLE_RE.test(rows[r][0] ?? "") || norm(rows[r][0]) === "date") break;
+      const key = LABELS[norm(rows[r][0])];
+      if (!key) continue;
+      cols.forEach((col, idx) => {
+        (days[idx] as Record<string, number | null | string>)[key] = num(rows[r][col]);
+      });
+    }
+    blocks.push({ name, days });
+    i = r;
+  }
+  return blocks;
+}
+
+function summarizeReport(name: string, days: DayRecord[]): Report {
+  const active = days.filter((x) => x.sent != null);
   const add = (k: keyof DayRecord) =>
-    active.reduce((a, d) => a + ((d[k] as number | null) ?? 0), 0);
+    active.reduce((a, x) => a + ((x[k] as number | null) ?? 0), 0);
   const sent = add("sent");
   const delivered = add("delivered");
   const read = add("read");
   const leads = add("leads");
+  const amountSpent = add("amountSpent");
+  const hasLeads = active.some((x) => (x.leads ?? 0) > 0);
+  const hasSpend = active.some((x) => (x.amountSpent ?? 0) > 0);
   return {
+    name,
+    slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
     days,
+    hasLeads,
+    hasSpend,
     totals: {
       campaigns: add("campaigns"),
-      sent,
-      delivered,
-      read,
+      sent, delivered, read,
+      failed: add("failed"),
       leads,
       utc: add("utc"),
       followUp: add("followUp"),
       scheduling: add("scheduling"),
       unqualified: add("unqualified"),
+      amountSpent,
       deliveryPct: sent ? (delivered / sent) * 100 : 0,
       leadPct: sent ? (leads / sent) * 100 : 0,
       readPct: delivered ? (read / delivered) * 100 : 0,
+      costPerLead: amountSpent > 0 && leads > 0 ? amountSpent / leads : null,
+      costPerMsg: amountSpent > 0 && sent > 0 ? amountSpent / sent : null,
       activeDays: active.length,
     },
-    source,
-    fetchedAt: new Date().toISOString(),
   };
 }
 
-// Bundled snapshot (05–13 Aug 2026) so the dashboard always renders even if
-// the sheet isn't publicly shared yet.
-export const SNAPSHOT: DayRecord[] = [
-  { date: "05-Aug", campaigns: 2, sent: 35213, delivered: 11113, deliveryPct: 31.56, urlClicks: null, failed: 23783, read: 6498, leads: 211, leadPct: 1.9, utc: 104, utcPct: 49.29, followUp: 7, scheduling: 7, followUpPct: 3.32, schedulingPct: 3.32, unqualified: 91, unqualifiedPct: 43.13 },
-  { date: "06-Aug", campaigns: 1, sent: 2072, delivered: 1125, deliveryPct: 54.3, urlClicks: null, failed: 908, read: 628, leads: 21, leadPct: 1.87, utc: 17, utcPct: 80.95, followUp: 2, scheduling: 0, followUpPct: 9.52, schedulingPct: 0, unqualified: 8, unqualifiedPct: 38.1 },
-  { date: "07-Aug", campaigns: 1, sent: 31993, delivered: 16445, deliveryPct: 51.4, urlClicks: null, failed: 15073, read: 8556, leads: 64, leadPct: 0.39, utc: 31, utcPct: 48.44, followUp: 3, scheduling: 2, followUpPct: 4.69, schedulingPct: 3.13, unqualified: 24, unqualifiedPct: 37.5 },
-  { date: "08-Aug", campaigns: 1, sent: 19767, delivered: 10814, deliveryPct: 54.71, urlClicks: null, failed: 8831, read: 6025, leads: 62, leadPct: 0.57, utc: 25, utcPct: 40.32, followUp: 9, scheduling: 2, followUpPct: 14.52, schedulingPct: 3.23, unqualified: 25, unqualifiedPct: 40.32 },
-  { date: "09-Aug", campaigns: 1, sent: 19722, delivered: 9992, deliveryPct: 50.66, urlClicks: null, failed: 9603, read: 5622, leads: 42, leadPct: 0.42, utc: 28, utcPct: 66.67, followUp: 2, scheduling: 0, followUpPct: 4.76, schedulingPct: 0, unqualified: 8, unqualifiedPct: 19.05 },
-  { date: "10-Aug", campaigns: 1, sent: 19826, delivered: 10227, deliveryPct: 51.58, urlClicks: null, failed: 9284, read: 5140, leads: 79, leadPct: 0.77, utc: 45, utcPct: 56.96, followUp: 4, scheduling: 2, followUpPct: 5.06, schedulingPct: 2.53, unqualified: 21, unqualifiedPct: 26.58 },
-  { date: "11-Aug", campaigns: 1, sent: 22302, delivered: 7237, deliveryPct: 32.45, urlClicks: null, failed: 14926, read: 3806, leads: 42, leadPct: 0.58, utc: 17, utcPct: 40.48, followUp: 3, scheduling: 2, followUpPct: 7.14, schedulingPct: 4.76, unqualified: 14, unqualifiedPct: 33.33 },
-  { date: "12-Aug", campaigns: 0, sent: null, delivered: null, deliveryPct: null, urlClicks: null, failed: null, read: null, leads: null, leadPct: null, utc: null, utcPct: null, followUp: null, scheduling: null, followUpPct: null, schedulingPct: null, unqualified: null, unqualifiedPct: null },
-  { date: "13-Aug", campaigns: 2, sent: 92592, delivered: 47001, deliveryPct: 50.76, urlClicks: 1606, failed: 43185, read: 27441, leads: 282, leadPct: 0.6, utc: 148, utcPct: 52.48, followUp: 9, scheduling: 3, followUpPct: 3.19, schedulingPct: 1.06, unqualified: 86, unqualifiedPct: 30.5 },
+// ---- Bundled snapshot fallback (used only if the sheet isn't public) ----
+const OX = (
+  date: string, campaigns: number | null, sent: number | null, delivered: number | null,
+  deliveryPct: number | null, failed: number | null, read: number | null, leads: number | null,
+  leadPct: number | null, utc: number | null, followUp: number | null, scheduling: number | null,
+  unqualified: number | null, unqualifiedPct: number | null
+): DayRecord => ({
+  ...emptyDay(date), campaigns, sent, delivered, deliveryPct, failed, read, leads,
+  leadPct, utc, followUp, scheduling, unqualified, unqualifiedPct,
+});
+
+const SP = (
+  date: string, campaigns: number | null, sent: number | null, delivered: number | null,
+  failed: number | null, read: number | null, amountSpent: number | null
+): DayRecord => ({ ...emptyDay(date), campaigns, sent, delivered, failed, read, amountSpent });
+
+const SNAPSHOT: { name: string; days: DayRecord[] }[] = [
+  {
+    name: "OneXtel",
+    days: [
+      OX("05-Aug", 2, 35213, 11113, 31.56, 23783, 6498, 211, 1.9, 104, 7, 7, 91, 43.13),
+      OX("06-Aug", 1, 2072, 1125, 54.3, 908, 628, 21, 1.87, 17, 2, 0, 8, 38.1),
+      OX("07-Aug", 1, 31993, 16445, 51.4, 15073, 8556, 64, 0.39, 31, 3, 2, 24, 37.5),
+      OX("08-Aug", 1, 19767, 10814, 54.71, 8831, 6025, 62, 0.57, 25, 9, 2, 25, 40.32),
+      OX("09-Aug", 1, 19722, 9992, 50.66, 9603, 5622, 42, 0.42, 28, 2, 0, 8, 19.05),
+      OX("10-Aug", 1, 19826, 10227, 51.58, 9284, 5140, 79, 0.77, 45, 4, 2, 21, 26.58),
+      OX("11-Aug", 1, 22302, 7237, 32.45, 14926, 3806, 42, 0.58, 17, 3, 2, 14, 33.33),
+      OX("12-Aug", 0, null, null, null, null, null, null, null, null, null, null, null, null),
+      OX("13-Aug", 2, 92592, 47001, 50.76, 43185, 27441, 282, 0.6, 148, 9, 3, 86, 30.5),
+    ],
+  },
+  {
+    name: "SMARTPING",
+    days: [
+      SP("13-Aug", 1, 243, 149, 94, 110, 139.3),
+      SP("14-Aug", 1, 157, 101, 56, 78, 90.9),
+      SP("15-Aug", null, null, null, null, null, null),
+      SP("16-Aug", null, null, null, null, null, null),
+      SP("17-Aug", 2, 830, 440, 380, 303, 396),
+      SP("18-Aug", 1, 350, 173, 154, 50, 155.7),
+    ],
+  },
 ];
 
-export async function getOneXtelData(): Promise<OneXtelData> {
+export async function getSheetData(): Promise<SheetData> {
   try {
     const res = await fetch(csvUrl(), { next: { revalidate: 300 } });
     const text = await res.text();
-    // A non-public sheet returns an HTML sign-in page, not CSV.
     if (!res.ok || text.trimStart().startsWith("<")) throw new Error("not public");
-    const days = parseOneXtel(text);
-    if (!days.length || days.every((d) => d.sent == null)) throw new Error("empty");
-    return summarize(days, "live");
+    const blocks = parseReports(text);
+    const withData = blocks.filter((b) => b.days.some((x) => x.sent != null));
+    if (!withData.length) throw new Error("empty");
+    return {
+      reports: withData.map((b) => summarizeReport(b.name, b.days)),
+      source: "live",
+      fetchedAt: new Date().toISOString(),
+    };
   } catch {
-    return summarize(SNAPSHOT, "snapshot");
+    return {
+      reports: SNAPSHOT.map((b) => summarizeReport(b.name, b.days)),
+      source: "snapshot",
+      fetchedAt: new Date().toISOString(),
+    };
   }
 }

@@ -15,8 +15,15 @@ Open http://localhost:3000
 
 ## Data source
 
-The dashboard reads the sheet through the public **gviz CSV** endpoint and
-parses the transposed OneXtel report block ([lib/sheet.ts](lib/sheet.ts)).
+The dashboard reads the sheet through the public **CSV export** endpoint
+(`/export?format=csv`) and parses *every* transposed "Campaign Track Report"
+block — currently **OneXtel** and **SMARTPING** — into per-day records
+([lib/sheet.ts](lib/sheet.ts)). Switch between them with the Slack-style
+workspace rail on the left.
+
+> We use `export?format=csv` rather than the `gviz` endpoint because gviz
+> infers one type per column and silently blanks mixed cells (it dropped the
+> SMARTPING dates and the ₹ Amount Spent values); the raw export is faithful.
 
 - If the sheet tab is publicly readable, it shows **live** data (revalidated
   every 5 minutes) — you'll see a green "Live · sheet" chip.
@@ -41,14 +48,19 @@ NEXT_PUBLIC_SHEET_GID=<gid>
 | --- | --- |
 | `lib/sheet.ts` | Fetch + CSV parse of the OneXtel block, totals, snapshot fallback |
 | `lib/theme.tsx` | Light/dark theme context + palette (also drives Recharts colors) |
-| `app/page.tsx` | Server component — fetches data, renders the dashboard |
-| `app/components/Dashboard.tsx` | Layout: KPIs, funnel, donut, table |
-| `app/components/charts.tsx` | Recharts: trend area chart, leads bar, delivery donut, sparklines |
+| `app/page.tsx` | Server component — fetches data, renders the workspace |
+| `app/components/Workspace.tsx` | Slack-style rail; switches the active report |
+| `app/components/Dashboard.tsx` | Report-aware layout: KPIs, funnel/spend, donut, table |
+| `app/components/charts.tsx` | Recharts: trend, leads bar, spend bar, donut, sparklines |
+| `app/actions.ts` | Server action for the on-demand Refresh button |
 | `app/globals.css` | Design tokens + component styles |
+
+The dashboard adapts to each report's metrics: reports with lead data
+(OneXtel) show the lead funnel + leads-per-day; reports with spend data
+(SMARTPING) show a spend summary + amount-spent-per-day and Cost/Message KPIs.
 
 ## Next steps
 
-- Add the **SMARTPING** report block (second `Date` row in the same tab).
 - Add the **lead-level tables** (Converted/Scheduling and Follow-up) as a
   filterable table with owner / city / lender breakdowns.
-- Wire **Amount Spent** to compute real Cost/Lead once SMARTPING spend flows in.
+- Deploy (e.g. Vercel) for an always-on shared URL.

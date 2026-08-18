@@ -1,9 +1,9 @@
-import { getOneXtelData } from "@/lib/sheet";
-import Dashboard from "@/app/components/Dashboard";
+import { getSheetData } from "@/lib/sheet";
+import Workspace from "@/app/components/Workspace";
 
 export const revalidate = 300;
 
 export default async function Page() {
-  const data = await getOneXtelData();
-  return <Dashboard data={data} />;
+  const data = await getSheetData();
+  return <Workspace data={data} />;
 }

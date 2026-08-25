@@ -130,6 +130,7 @@ body {
 .kpi .spark { position: absolute; right: 8px; bottom: 8px; width: 92px; height: 38px; opacity: 0.9; }
 .kpi.feature { background: linear-gradient(160deg, var(--surface), var(--surface-2)); }
 .kpi.feature::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--gold); }
+.kpi.na .val { color: var(--muted); font-weight: 600; }
 
 /* Cards + grid */
 .grid { display: grid; grid-template-columns: 1.7fr 1fr; gap: 14px; margin-top: 14px; }

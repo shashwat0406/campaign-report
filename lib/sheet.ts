@@ -35,6 +35,19 @@ export type DayRecord = {
   amountSpent: number | null;
   disburse: number | null;
   cac: number | null;
+  followUpLsq: number | null;
+  schedulingLsq: number | null;
+};
+
+// Block-level "Current Numbers" pipeline snapshot (from the "As on Today"
+// column). Any metric the sheet leaves blank stays null and renders as "NA".
+export type CurrentNumbers = {
+  followUpLsq: number | null;
+  schedulingLsq: number | null;
+  unqualified: number | null;
+  unqualifiedPct: number | null;
+  utc: number | null;
+  utcPct: number | null;
 };
 
 export type Totals = {
@@ -72,6 +85,7 @@ export type Report = {
 
 export type SheetData = {
   reports: Report[];
+  currentNumbers: CurrentNumbers | null;
   source: "live" | "snapshot";
   fetchedAt: string;
 };
@@ -141,6 +155,8 @@ const LABELS: Record<string, keyof DayRecord> = {
   "amount spent": "amountSpent",
   disburse: "disburse",
   cac: "cac",
+  "follow up (lsq)": "followUpLsq",
+  "scheduling/branch walkin (lsq)": "schedulingLsq",
 };
 
 const TITLE_RE = /campaign track report\s*-\s*(.+)/i;
@@ -151,8 +167,23 @@ function emptyDay(date: string): DayRecord {
     urlClicks: null, failed: null, read: null, leads: null, leadPct: null,
     utc: null, utcPct: null, followUp: null, scheduling: null, followUpPct: null,
     schedulingPct: null, unqualified: null, unqualifiedPct: null, amountSpent: null,
-    disburse: null, cac: null,
+    disburse: null, cac: null, followUpLsq: null, schedulingLsq: null,
   };
+}
+
+// Extracts the "Current Numbers" pipeline snapshot from a block's aggregate
+// ("As on Today") record. Returns null if the block carries none of them.
+function currentNumbersFrom(s: DayRecord | undefined): CurrentNumbers | null {
+  if (!s) return null;
+  const cn: CurrentNumbers = {
+    followUpLsq: s.followUpLsq,
+    schedulingLsq: s.schedulingLsq,
+    unqualified: s.unqualified,
+    unqualifiedPct: s.unqualifiedPct,
+    utc: s.utc,
+    utcPct: s.utcPct,
+  };
+  return Object.values(cn).some((v) => v != null) ? cn : null;
 }
 
 type Block = { name: string; days: DayRecord[]; summary: DayRecord };
@@ -274,7 +305,11 @@ const SP = (
 const SNAPSHOT: { name: string; days: DayRecord[]; summary?: DayRecord }[] = [
   {
     name: "OneXtel",
-    summary: { ...emptyDay("As on Today"), disburse: 3125000, amountSpent: 120000, cac: 3.84 },
+    summary: {
+      ...emptyDay("As on Today"),
+      disburse: 3125000, amountSpent: 120000, cac: 3.84,
+      followUpLsq: 36, schedulingLsq: 5, unqualified: 507, utc: 1425,
+    },
     days: [
       OX("05-Aug", 2, 35213, 11113, 31.56, 23783, 6498, 211, 1.9, 104, 7, 7, 91, 43.13),
       OX("06-Aug", 1, 2072, 1125, 54.3, 908, 628, 21, 1.87, 17, 2, 0, 8, 38.1),
@@ -310,12 +345,14 @@ export async function getSheetData(): Promise<SheetData> {
     if (!withData.length) throw new Error("empty");
     return {
       reports: withData.map((b) => summarizeReport(b.name, b.days, b.summary)),
+      currentNumbers: withData.map((b) => currentNumbersFrom(b.summary)).find(Boolean) ?? null,
       source: "live",
       fetchedAt: new Date().toISOString(),
     };
   } catch {
     return {
       reports: SNAPSHOT.map((b) => summarizeReport(b.name, b.days, b.summary)),
+      currentNumbers: SNAPSHOT.map((b) => currentNumbersFrom(b.summary)).find(Boolean) ?? null,
       source: "snapshot",
       fetchedAt: new Date().toISOString(),
     };

@@ -115,7 +115,7 @@ body {
 .chip.snapshot .dot { background: var(--warn); }
 
 /* KPI row */
-.kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-top: 26px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-top: 26px; }
 .kpi {
   background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
   padding: 16px 16px 14px; box-shadow: var(--shadow); position: relative; overflow: hidden;

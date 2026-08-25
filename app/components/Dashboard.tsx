@@ -55,7 +55,9 @@ export default function Dashboard({
         { label: "Delivered", val: nf(t.delivered), meta: `${pct(t.deliveryPct)} delivery rate`, spark: spark("delivered"), feat: false },
         { label: "Read", val: nf(t.read), meta: `${pct(t.readPct)} of delivered`, spark: spark("read"), feat: false },
         { label: "Leads Created", val: nf(t.leads), meta: `${pct(t.leadPct, 2)} of sent`, spark: spark("leads"), feat: true },
-        { label: "Avg Cost / Lead", val: t.costPerLead != null ? inr(t.costPerLead) : "₹—", meta: t.costPerLead != null ? "spend ÷ leads" : "awaiting spend data", spark: spark("leads"), feat: false },
+        { label: "Amount Spent", val: t.spend != null ? inr(t.spend, 0) : "₹—", meta: t.spend != null ? `across ${t.campaigns} campaigns` : "awaiting spend data", spark: spark("sent"), feat: false },
+        { label: "Disbursed", val: t.disburse != null ? inr(t.disburse, 0) : "₹—", meta: t.disburse != null ? "loan amount disbursed" : "awaiting disbursal data", spark: spark("leads"), feat: true },
+        { label: "CAC", val: t.cac != null ? pct(t.cac, 2) : "—", meta: t.cac != null ? "customer acquisition cost" : "awaiting spend data", spark: spark("leads"), feat: false },
       ];
 
   const funnel = [

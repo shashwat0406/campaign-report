@@ -33,6 +33,8 @@ export type DayRecord = {
   unqualified: number | null;
   unqualifiedPct: number | null;
   amountSpent: number | null;
+  disburse: number | null;
+  cac: number | null;
 };
 
 export type Totals = {
@@ -53,6 +55,10 @@ export type Totals = {
   costPerLead: number | null;
   costPerMsg: number | null;
   activeDays: number;
+  // Aggregate summary values read from the sheet's "As on Today" column.
+  disburse: number | null;
+  spend: number | null;
+  cac: number | null;
 };
 
 export type Report = {
@@ -133,6 +139,8 @@ const LABELS: Record<string, keyof DayRecord> = {
   unqualified: "unqualified",
   "unqualified %": "unqualifiedPct",
   "amount spent": "amountSpent",
+  disburse: "disburse",
+  cac: "cac",
 };
 
 const TITLE_RE = /campaign track report\s*-\s*(.+)/i;
@@ -143,13 +151,18 @@ function emptyDay(date: string): DayRecord {
     urlClicks: null, failed: null, read: null, leads: null, leadPct: null,
     utc: null, utcPct: null, followUp: null, scheduling: null, followUpPct: null,
     schedulingPct: null, unqualified: null, unqualifiedPct: null, amountSpent: null,
+    disburse: null, cac: null,
   };
 }
 
+type Block = { name: string; days: DayRecord[]; summary: DayRecord };
+
 // Parses every "Campaign Track Report - X" block in the sheet into DayRecords.
-export function parseReports(csv: string): { name: string; days: DayRecord[] }[] {
+// The "As on Today" column holds block-level aggregates (Disburse, Amount
+// Spent, CAC) rather than a day, so it's pulled out into a `summary` record.
+export function parseReports(csv: string): Block[] {
   const rows = parseCsv(csv);
-  const blocks: { name: string; days: DayRecord[] }[] = [];
+  const blocks: Block[] = [];
   let i = 0;
   while (i < rows.length) {
     const m = (rows[i][0] ?? "").match(TITLE_RE);
@@ -166,11 +179,17 @@ export function parseReports(csv: string): { name: string; days: DayRecord[] }[]
     const dateRow = rows[d];
     const cols: number[] = [];
     const days: DayRecord[] = [];
+    const summary = emptyDay("As on Today");
+    let summaryCol = -1;
     for (let c = 1; c < dateRow.length; c++) {
-      if (norm(dateRow[c]) !== "") {
-        cols.push(c);
-        days.push(emptyDay(dateRow[c].trim()));
+      const h = norm(dateRow[c]);
+      if (h === "") continue;
+      if (h === "as on today") {
+        summaryCol = c; // aggregate column, not a day
+        continue;
       }
+      cols.push(c);
+      days.push(emptyDay(dateRow[c].trim()));
     }
     // Read metric rows until the next block title or Date row.
     let r = d + 1;
@@ -181,14 +200,17 @@ export function parseReports(csv: string): { name: string; days: DayRecord[] }[]
       cols.forEach((col, idx) => {
         (days[idx] as Record<string, number | null | string>)[key] = num(rows[r][col]);
       });
+      if (summaryCol >= 0) {
+        (summary as Record<string, number | null | string>)[key] = num(rows[r][summaryCol]);
+      }
     }
-    blocks.push({ name, days });
+    blocks.push({ name, days, summary });
     i = r;
   }
   return blocks;
 }
 
-function summarizeReport(name: string, days: DayRecord[]): Report {
+function summarizeReport(name: string, days: DayRecord[], summary?: DayRecord): Report {
   const active = days.filter((x) => x.sent != null);
   const add = (k: keyof DayRecord) =>
     active.reduce((a, x) => a + ((x[k] as number | null) ?? 0), 0);
@@ -197,6 +219,11 @@ function summarizeReport(name: string, days: DayRecord[]): Report {
   const read = add("read");
   const leads = add("leads");
   const amountSpent = add("amountSpent");
+  // Prefer the sheet's aggregate ("As on Today") spend; fall back to the
+  // per-day sum for reports that only track spend daily (e.g. SMARTPING).
+  const spend = summary?.amountSpent ?? (amountSpent > 0 ? amountSpent : null);
+  const disburse = summary?.disburse ?? null;
+  const cac = summary?.cac ?? null;
   const hasLeads = active.some((x) => (x.leads ?? 0) > 0);
   const hasSpend = active.some((x) => (x.amountSpent ?? 0) > 0);
   return {
@@ -221,6 +248,9 @@ function summarizeReport(name: string, days: DayRecord[]): Report {
       costPerLead: amountSpent > 0 && leads > 0 ? amountSpent / leads : null,
       costPerMsg: amountSpent > 0 && sent > 0 ? amountSpent / sent : null,
       activeDays: active.length,
+      disburse,
+      spend,
+      cac,
     },
   };
 }
@@ -241,9 +271,10 @@ const SP = (
   failed: number | null, read: number | null, amountSpent: number | null
 ): DayRecord => ({ ...emptyDay(date), campaigns, sent, delivered, failed, read, amountSpent });
 
-const SNAPSHOT: { name: string; days: DayRecord[] }[] = [
+const SNAPSHOT: { name: string; days: DayRecord[]; summary?: DayRecord }[] = [
   {
     name: "OneXtel",
+    summary: { ...emptyDay("As on Today"), disburse: 3125000, amountSpent: 120000, cac: 3.84 },
     days: [
       OX("05-Aug", 2, 35213, 11113, 31.56, 23783, 6498, 211, 1.9, 104, 7, 7, 91, 43.13),
       OX("06-Aug", 1, 2072, 1125, 54.3, 908, 628, 21, 1.87, 17, 2, 0, 8, 38.1),
@@ -278,13 +309,13 @@ export async function getSheetData(): Promise<SheetData> {
     const withData = blocks.filter((b) => b.days.some((x) => x.sent != null));
     if (!withData.length) throw new Error("empty");
     return {
-      reports: withData.map((b) => summarizeReport(b.name, b.days)),
+      reports: withData.map((b) => summarizeReport(b.name, b.days, b.summary)),
       source: "live",
       fetchedAt: new Date().toISOString(),
     };
   } catch {
     return {
-      reports: SNAPSHOT.map((b) => summarizeReport(b.name, b.days)),
+      reports: SNAPSHOT.map((b) => summarizeReport(b.name, b.days, b.summary)),
       source: "snapshot",
       fetchedAt: new Date().toISOString(),
     };
